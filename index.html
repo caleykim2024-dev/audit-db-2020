@@ -111,7 +111,12 @@ input[type=text],input[type=number],input[type=password],input[type=url]{width:1
 /* ============ 상태 ============ */
 const LS_STATE='quizState.v1', LS_CFG='quizCfg.v1';
 let Q=[], QB={}, DECKS=[], S=null, loadErr='';
+// ★ 여기에 Supabase 정보를 넣으면 모든 기기가 따로 입력하지 않아도 자동으로 연결돼요.
+//   (비워 두면 설정 화면에서 기기마다 직접 입력/연결 링크로 연결해요.)
+//   주의: 이 파일은 사이트를 여는 누구나 볼 수 있으니, code는 추측하기 어려운 값으로 하세요.
+const DEFAULT_SYNC={url:'https://juxpalagmmpkgfihzaov.supabase.co',key:'sb_publishable_H-NaL9oSKGGp14VUHNuaug_KveF9VhR,code:'aduit-2010'};
 let cfg=JSON.parse(localStorage.getItem(LS_CFG)||'{}');
+if(DEFAULT_SYNC.url&&DEFAULT_SYNC.key&&DEFAULT_SYNC.code)cfg={url:DEFAULT_SYNC.url.trim(),key:DEFAULT_SYNC.key.trim(),code:DEFAULT_SYNC.code.trim()};
 let view='home', cur=0, curDeck='', syncStatus='', pushTimer=null, settingsMsg='';
 const $app=document.getElementById('app');
 
@@ -328,6 +333,8 @@ function renderSettings(){
         <button class="btn small" onclick="saveSync()">연결</button>
         <span class="sync" id="sync">${syncText()}</span>
       </div>
+      ${syncOn()?`<button class="btn small ghost" style="margin-top:12px" onclick="copySyncLink()">다른 기기 연결 링크 복사</button>
+      <p class="help">다른 기기(폰, 패드 등)의 브라우저에서 이 링크를 열면 위 세 값이 자동으로 입력돼요.</p>`:''}
     </div>
 
     <h2>엑셀 → 문제 파일 변환</h2>
@@ -395,6 +402,29 @@ async function saveSync(){
 function resetAll(){
   if(!confirm('모든 풀이 기록이 삭제돼요. 정말 지울까요?'))return;
   const keep=S.perDay;S=defaultState();S.perDay=keep;ensureToday();save();view='home';render();
+}
+
+
+/* ============ 연결 링크 (다른 기기에서 열면 Supabase 설정이 자동 입력됨) ============ */
+function applySyncLink(){
+  const m=location.hash.match(/^#sync=(.+)$/);
+  if(!m)return false;
+  try{
+    const o=JSON.parse(decodeURIComponent(m[1]));
+    if(o&&o.url&&o.key&&o.code){
+      cfg={url:String(o.url),key:String(o.key),code:String(o.code)};
+      localStorage.setItem(LS_CFG,JSON.stringify(cfg));
+      history.replaceState(null,'',location.pathname+location.search);
+      return true;
+    }
+  }catch(_){}
+  return false;
+}
+function copySyncLink(){
+  const link=location.origin+location.pathname+'#sync='+encodeURIComponent(JSON.stringify({url:cfg.url,key:cfg.key,code:cfg.code}));
+  const done=()=>alert('복사했어요. 다른 기기의 브라우저 주소창에 붙여넣어 열면 자동으로 연결돼요.\n(이 링크에는 동기화 코드가 들어 있으니 다른 사람에게 보내지 마세요.)');
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(link).then(done).catch(()=>prompt('이 링크를 복사하세요',link));
+  else prompt('이 링크를 복사하세요',link);
 }
 
 /* ============ 엑셀 변환 ============ */
@@ -487,6 +517,7 @@ async function convertXlsx(files){
 
 /* ============ 시작 ============ */
 async function init(){
+  applySyncLink();
   S=loadLocal();render();
   try{
     const r=await fetch('questions.json',{cache:'no-cache'});
