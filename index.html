@@ -136,12 +136,18 @@ const AREAS=[
 const AREA_NAMES=AREAS.map(a=>a.name);
 const CHUNK_DEFAULT=200;
 let ALL=AREA_NAMES.slice();
-// ★ 여기에 Supabase 정보를 넣으면 모든 기기가 따로 입력하지 않아도 자동으로 연결돼요.
-//   (비워 두면 설정 화면에서 기기마다 직접 입력/연결 링크로 연결해요.)
-//   주의: 이 파일은 사이트를 여는 누구나 볼 수 있으니, code는 추측하기 어려운 값으로 하세요.
-const DEFAULT_SYNC={url:'https://juxpalagmmpkgfihzaov.supabase.co',key:'sb_publishable_H-NaL9oSKGGp14VUHNuaug_KveF9VhR',code:'aduit-2010'};
 let cfg=JSON.parse(localStorage.getItem(LS_CFG)||'{}');
-if(DEFAULT_SYNC.url&&DEFAULT_SYNC.key&&DEFAULT_SYNC.code)cfg={url:DEFAULT_SYNC.url.trim(),key:DEFAULT_SYNC.key.trim(),code:DEFAULT_SYNC.code.trim()};
+// Supabase 정보는 config.json 에 넣으면 모든 기기가 따로 입력하지 않아도 자동으로 연결돼요.
+// (config.json 이 없거나 값이 하나라도 비어 있으면 설정 화면/연결 링크로 기기마다 연결해요.)
+async function loadConfigFile(){
+  try{
+    const r=await fetch('config.json',{cache:'no-cache'});
+    if(!r.ok)return;
+    const o=JSON.parse(await r.text()), sy=(o&&o.sync)||{};
+    const url=String(sy.url||'').trim(), key=String(sy.key||'').trim(), code=String(sy.code||'').trim();
+    if(url&&key&&code)cfg={url,key,code};
+  }catch(_){}
+}
 let view='home', cur=0, curDeck='', syncStatus='', pushTimer=null, settingsMsg='';
 const $app=document.getElementById('app');
 
@@ -662,6 +668,7 @@ async function loadAllQuestions(){
 /* ============ 시작 ============ */
 async function init(){
   applySyncLink();
+  await loadConfigFile();
   S=loadLocal();render();
   Q=await loadAllQuestions();
   if(!Q.length){
