@@ -50,6 +50,19 @@ h2{font-size:18px;margin:28px 0 10px}
 .btn.danger{background:#fff;color:var(--ng);border:1px solid var(--ng-bg)}
 .btn.small{width:auto;padding:10px 16px;font-size:15px}
 .start{margin-top:22px}
+.areas{display:grid;gap:12px;margin-top:6px}
+.area{display:block;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;color:inherit;text-decoration:none}
+a.area:active{border-color:var(--accent)}
+.area.off{opacity:.55}
+.area .deckhead{margin-bottom:8px}
+.bar{height:8px;border-radius:99px;background:#E4E9F3;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ok);border-radius:99px}
+a.area.off{pointer-events:auto}
+.notice{background:#FFF4D6;border:1px solid #F0D98A;border-radius:14px;padding:12px 14px;font-size:14px;color:#5A4600;margin:0 0 12px;white-space:pre-wrap;word-break:keep-all}
+.empty{text-align:center;padding:36px 16px}
+.empty b{display:block;font-size:19px;margin-bottom:6px}
+.empty p{color:var(--muted);margin:0;white-space:pre-wrap}
+a.icon-btn{display:grid;place-items:center;text-decoration:none}
 .deckhead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:12px}
 .deckhead b{font-size:20px;letter-spacing:-.02em}
 .deckhead span{font-size:14px;color:var(--muted)}
@@ -110,7 +123,19 @@ input[type=text],input[type=number],input[type=password],input[type=url]{width:1
 <script>
 /* ============ 상태 ============ */
 const LS_STATE='quizState.v1', LS_CFG='quizCfg.v1';
-let Q=[], QB={}, DECKS=[], S=null, loadErr='';
+let Q=[], QB={}, DECKS=[], S=null, loadErr='', ready=false, loadNote='', BAD=[];
+// ★ 영역 목록(표시 순서). 영역을 바꾸거나 추가하려면 여기만 고치세요. 엑셀의 '분류'(또는 파일 이름)와 같아야 해요.
+// 파일 이름(file)은 영문으로: 문제 파일은 questions/gamri.json, 길면 gamri-2.json, gamri-3.json … 으로 나눠 올려요.
+const AREAS=[
+  {name:'감리',file:'gamri'},
+  {name:'소공',file:'sogong'},
+  {name:'데이터베이스',file:'database'},
+  {name:'시구',file:'sigu'},
+  {name:'보안',file:'security'}
+];
+const AREA_NAMES=AREAS.map(a=>a.name);
+const CHUNK_DEFAULT=200;
+let ALL=AREA_NAMES.slice();
 // ★ 여기에 Supabase 정보를 넣으면 모든 기기가 따로 입력하지 않아도 자동으로 연결돼요.
 //   (비워 두면 설정 화면에서 기기마다 직접 입력/연결 링크로 연결해요.)
 //   주의: 이 파일은 사이트를 여는 누구나 볼 수 있으니, code는 추측하기 어려운 값으로 하세요.
@@ -229,36 +254,83 @@ function isOk(t,id){const r=t.res[id];if(!r||!(r.tries>0))return false;
 
 function render(){
   if(loadErr){$app.innerHTML=`<h1>문제를 불러오지 못했어요</h1><div class="err-box">${e(loadErr)}</div>`;return;}
-  if(!S){$app.innerHTML='<p class="sub">불러오는 중…</p>';return;}
-  if(!Q.length&&view!=='settings'){
-    $app.innerHTML=`<div class="top"><span></span><button class="icon-btn" onclick="openSettings()" aria-label="설정">⚙</button></div>
-      <h1>문제가 아직 없어요</h1><p class="sub">설정에서 엑셀을 변환해 questions.json을 만든 뒤, index.html과 같은 폴더에 넣어주세요.</p>`;return;}
+  if(!S||!ready){$app.innerHTML='<p class="sub">불러오는 중…</p>';return;}
   if(view==='settings')return renderSettings();
   if(view==='quiz')return renderQuiz();
   if(view==='result')return renderResult();
-  renderHome();
+  if(view==='area')return renderArea();
+  renderLanding();
 }
 
-function renderHome(){
+/* ---- 주소(#)로 페이지를 나눔: 비어 있으면 영역 목록, #/감리 이면 감리 페이지 ---- */
+function routeFromHash(){
+  let h='';try{h=decodeURIComponent(location.hash.replace(/^#\/?/,''));}catch(_){}
+  if(h&&ALL.includes(h)){curDeck=h;view='area';}else{curDeck='';view='landing';}
+}
+window.addEventListener('hashchange',()=>{if(!S||!ready)return;routeFromHash();render();});
+
+/* ---- 첫 페이지: 영역 목록 ---- */
+function noticeHtml(extra){
+  const parts=[];
+  if(loadNote)parts.push(loadNote);
+  if(BAD.length)parts.push('읽지 못한 파일이 있어요 (형식 오류): '+BAD.join(', ')+'\n해당 영역의 문제가 일부 빠졌을 수 있어요.');
+  if(extra)parts.push(extra);
+  return parts.length?`<div class="notice">${e(parts.join('\n\n'))}</div>`:'';
+}
+function renderLanding(){
   const d=new Date().toLocaleDateString('ko-KR',{month:'long',day:'numeric',weekday:'long'});
-  const panels=DECKS.map((dk,i)=>{
-    const t=S.days[dk],n=t.ids.length,done=doneCount(dk);
-    const all=Q.filter(q=>q.deck===dk);
-    const seen=all.filter(q=>(S.stats[q.id]||{}).seen>0).length;
-    const pending=S.queue.filter(x=>QB[x.id]&&QB[x.id].deck===dk).length;
-    const label=done===0?'시작하기':done<n?'이어서 풀기':'결과 보기';
-    return `<div class="panel" style="margin-top:14px">
-      <div class="deckhead"><b>${e(dk)}</b><span>오늘 ${n}문제${t.wrongFrom.length?` · 복습 ${t.wrongFrom.length}개`:''}</span></div>
-      ${dotsHtml(dk,false)}
-      <p class="deckmeta">풀어본 문제 ${seen}/${all.length} · 다시 나올 오답 ${pending}개</p>
-      <button class="btn start" style="margin-top:14px" onclick="start(${i})">${label}</button>
-    </div>`;
+  const cards=ALL.map(name=>{
+    const href='#/'+encodeURIComponent(name);
+    const t=S.days[name];
+    if(!DECKS.includes(name)||!t)return `<a class="area off" href="${href}"><div class="deckhead" style="margin-bottom:0"><b>${e(name)}</b><span>문제 준비 중</span></div></a>`;
+    const n=t.ids.length,done=doneCount(name);
+    const total=Q.filter(q=>q.deck===name).length;
+    const pending=S.queue.filter(x=>QB[x.id]&&QB[x.id].deck===name).length;
+    return `<a class="area" href="${href}">
+      <div class="deckhead"><b>${e(name)}</b><span>오늘 ${done}/${n}</span></div>
+      <div class="bar"><i style="width:${n?Math.round(done/n*100):0}%"></i></div>
+      <p class="deckmeta">전체 ${total}문제 · 다시 나올 오답 ${pending}개</p></a>`;
   }).join('');
   $app.innerHTML=`
     <div class="top"><span class="sync" id="sync">${syncText()}</span><button class="icon-btn" onclick="openSettings()" aria-label="설정">⚙</button></div>
-    <h1>${e(d)}</h1>
-    <p class="sub">${DECKS.length>1?'풀고 싶은 문제를 골라 주세요.':'오늘 풀 문제예요.'}</p>
-    ${panels}`;
+    <h1>${e(document.title)}</h1>
+    <p class="sub">${e(d)} · 풀고 싶은 영역을 골라 주세요.</p>
+    ${noticeHtml()}
+    <div class="areas">${cards}</div>`;
+  window.scrollTo(0,0);
+}
+
+/* ---- 영역 페이지: 그 영역의 오늘 문제 ---- */
+function renderArea(){
+  const dk=curDeck;
+  const top=`<div class="top"><a class="icon-btn" href="#" aria-label="영역 목록으로">←</a><span class="sync" id="sync">${syncText()}</span><button class="icon-btn" onclick="openSettings()" aria-label="설정">⚙</button></div>`;
+  const t=S.days[dk];
+  if(!DECKS.includes(dk)||!t){
+    const area=AREAS.find(a=>a.name===dk);
+    const bad=BAD.filter(f=>area&&f.indexOf('questions/'+area.file)===0);
+    $app.innerHTML=`${top}
+      <h1>${e(dk)}</h1>
+      ${bad.length?`<div class="notice">${e('파일을 읽지 못했어요 (형식 오류): '+bad.join(', '))}</div>`:''}
+      <div class="empty"><b>아직 문제가 없어요</b>
+      <p>${e(area?'questions/'+area.file+'.json 파일을 올리면\n이 페이지에 문제가 나와요.':'이 영역의 문제 파일을 올리면 문제가 나와요.')}</p></div>`;
+    window.scrollTo(0,0);return;
+  }
+  const i=DECKS.indexOf(dk),n=t.ids.length,done=doneCount(dk);
+  const all=Q.filter(q=>q.deck===dk);
+  const seen=all.filter(q=>(S.stats[q.id]||{}).seen>0).length;
+  const pending=S.queue.filter(x=>QB[x.id]&&QB[x.id].deck===dk).length;
+  const label=done===0?'시작하기':done<n?'이어서 풀기':'결과 보기';
+  const area=AREAS.find(a=>a.name===dk);
+  const bad=BAD.filter(f=>area&&f.indexOf('questions/'+area.file)===0);
+  $app.innerHTML=`${top}
+    <h1>${e(dk)}</h1>
+    <p class="sub">오늘 ${n}문제${t.wrongFrom.length?` · 그중 지난번에 틀린 문제 ${t.wrongFrom.length}개`:''}</p>
+    ${bad.length?`<div class="notice">${e('읽지 못한 파일이 있어요 (형식 오류): '+bad.join(', '))}</div>`:''}
+    <div class="panel">${dotsHtml(dk,false)}
+      <p class="deckmeta">풀어본 문제 ${seen}/${all.length} · 다시 나올 오답 ${pending}개</p>
+      <button class="btn start" style="margin-top:14px" onclick="start(${i})">${label}</button>
+    </div>`;
+  window.scrollTo(0,0);
 }
 
 function renderQuiz(){
@@ -316,7 +388,7 @@ function renderSettings(){
     <h2>하루 문제 수</h2>
     <div class="panel">
       <input type="number" id="perDay" min="1" max="70" value="${S.perDay}">
-      <p class="help">어휘, 한자 등 분류마다 이만큼씩 나와요. 바꾸면 다음 날부터 적용돼요.</p>
+      <p class="help">영역마다 이만큼씩 나와요. 바꾸면 다음 날부터 적용돼요.</p>
       <div style="display:flex;gap:10px;margin-top:12px">
         <button class="btn small" onclick="savePerDay()">저장</button>
         <button class="btn small ghost" onclick="rebuildToday()">오늘 문제 다시 뽑기</button>
@@ -339,8 +411,10 @@ function renderSettings(){
 
     <h2>엑셀 → 문제 파일 변환</h2>
     <div class="panel">
-      <p class="help" style="margin-top:0">어휘 엑셀과 한자 엑셀을 <b>한꺼번에 같이 선택</b>하면 하나의 questions.json으로 합쳐서 내려받아져요. 파일은 열 이름으로 자동 구분해요.</p>
-      <p class="help">어휘: ID, 어휘, 설명, 예문, 보기 1~4, 정답<br>한자: ID, 한자, 보기 1~4, 정답, 정답텍스트, 설명<br>그 밖: ID, 문제, 보기 1~5, 정답, 풀이, 분류(선택)</p>
+      <p class="help" style="margin-top:0">엑셀을 고르면 문제를 <b>영역별로 나눈 파일</b>이 questions.zip으로 내려받아져요. 엑셀은 여러 개를 같이 골라도 되고, <b>분류</b> 열(없으면 파일 이름)이 영역 이름이에요.</p>
+      <p class="help">열 이름: ID, 분류, 문제, 보기1~보기5, 정답(보기 번호), 풀이, 이미지(선택)<br>영역 이름: ${AREA_NAMES.join(', ')}</p>
+      <label for="chunk">한 파일에 넣을 문제 수</label><input type="number" id="chunk" min="20" max="2000" value="${CHUNK_DEFAULT}">
+      <p class="help">파일이 너무 커서 올리기 힘들면 숫자를 줄이세요. 영역 안에서 이 수만큼씩 파일이 나뉘어요.</p>
       <input type="file" id="xl" accept=".xlsx,.xls,.csv" multiple onchange="convertXlsx(this.files)">
       <div class="msg" id="convMsg">${e(settingsMsg)}</div>
     </div>
@@ -352,7 +426,7 @@ function renderSettings(){
 
 /* ============ 동작 ============ */
 function go(i){cur=i;render();}
-function home(){view='home';render();}
+function home(){view=curDeck?'area':'landing';render();}
 function openSettings(){view='settings';render();}
 function start(i){
   curDeck=DECKS[i];
@@ -431,9 +505,10 @@ function copySyncLink(){
 /*CONVERT_START*/
 const TEXT_FIXES=[['보 거나','보거나'],['만 큼','만큼'],['나아 지는','나아지는'],['내 는 것','내는 것'],['통융성','융통성'],['사업 이 잘되다','사업이 잘되다'],['재주..','재주.']];
 function convertRows(rows,fileName){
-  const list=[],notes=[],fixed={};
+  const list=[],notes=[],fixed={};let useFix=true;
   const clean=s=>{
     s=String(s).trim();
+    if(!useFix)return s;
     for(const [a,b] of TEXT_FIXES){ if(s.includes(a)){fixed[a]=(fixed[a]||0)+s.split(a).length-1;s=s.split(a).join(b);} }
     if(s.endsWith(',')){fixed['끝 쉼표']=(fixed['끝 쉼표']||0)+1;s=s.slice(0,-1)+'.';}
     return s;
@@ -449,6 +524,7 @@ function convertRows(rows,fileName){
     if(!question&&vocab){question='‘'+vocab+'’의 뜻으로 알맞은 것은?';deck=deck||'어휘';kind='vocab';}
     else if(!question&&hanja){question='다음 한자의 뜻(훈)과 소리(음)로 알맞은 것은?';big=hanja;deck=deck||'한자';kind='hanja';}
     if(!question)return;
+    useFix=(kind!=='generic');
     deck=deck||fileName.replace(/\.[^.]+$/,'')||'문제';
     const choices=[];
     for(let n=1;n<=5;n++){
@@ -506,41 +582,107 @@ async function convertXlsx(files){
     all.forEach(x=>{if(seen.has(x.id))dups.push(x.id);seen.add(x.id);});
     if(dups.length)notes.push('ID가 겹쳐요: '+dups.slice(0,10).join(', ')+' (분류마다 ID는 1, 2, 3…처럼 서로 달라야 해요)');
     const counts={};all.forEach(x=>{counts[x.deck]=(counts[x.deck]||0)+1;});
-    const blob=new Blob([JSON.stringify(all,null,2)],{type:'application/json'});
-    const a2=document.createElement('a');a2.href=URL.createObjectURL(blob);a2.download='questions.json';a2.click();
+    const chunk=Math.max(20,parseInt((document.getElementById('chunk')||{}).value,10)||CHUNK_DEFAULT);
+    const files=splitForUpload(all,chunk);
+    const mode=await downloadFiles(files);
     const fx=Object.keys(fixed).length?'\n자동으로 고친 글자: '+Object.entries(fixed).map(([k,v])=>k+' '+v+'곳').join(', '):'';
-    out.textContent=Object.entries(counts).map(([k,v])=>k+' '+v+'문제').join(', ')+'를 합쳐 questions.json으로 내려받았어요.'+fx
+    out.textContent=Object.entries(counts).map(([k,v])=>k+' '+v+'문제').join(', ')+'를 '+files.length+'개 파일로 나눴어요.\n'
+      +(mode==='zip'?'questions.zip을 내려받았어요. 압축을 풀면 questions 폴더가 나와요.':'압축 도구를 못 불러와 파일을 하나씩 내려받았어요. 파일 이름의 "questions_"를 지우고 questions 폴더에 넣어 주세요.')
+      +'\n'+files.map(f=>'· '+f.path+' ('+f.data.length+'문제)').join('\n')+fx
       +(notes.length?'\n\n확인이 필요한 항목:\n'+notes.join('\n'):'')
-      +'\n\n이 파일을 index.html과 같은 폴더에 넣고 다시 올려주세요.';
+      +'\n\nquestions 폴더를 index.html과 같은 위치에 올리세요. 한 영역만 고쳤다면 그 영역의 파일만 올려도 돼요. 문제 수가 줄어 파일 수가 줄었다면, 남은 번호의 옛 파일(예: gamri-3.json)은 지우세요.';
   }catch(err){out.textContent='변환 실패: '+err.message;}
+}
+
+
+/* ============ 문제 파일 나누기 / 불러오기 ============ */
+function splitForUpload(all,chunk){
+  const files=[],rest=[],byDeck={};
+  all.forEach(x=>{(byDeck[x.deck]=byDeck[x.deck]||[]).push(x);});
+  for(const deck in byDeck){
+    const area=AREAS.find(a=>a.name===deck);
+    if(!area){rest.push(...byDeck[deck]);continue;}
+    const list=byDeck[deck];
+    for(let i=0,n=1;i<list.length;i+=chunk,n++){
+      files.push({path:'questions/'+area.file+(n>1?'-'+n:'')+'.json',data:list.slice(i,i+chunk)});
+    }
+  }
+  if(rest.length)files.push({path:'questions.json',data:rest});
+  return files;
+}
+function saveBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();}
+async function downloadFiles(files){
+  try{
+    if(!window.JSZip)await loadScript('https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js');
+    const zip=new JSZip();
+    files.forEach(f=>zip.file(f.path,JSON.stringify(f.data,null,1)));
+    saveBlob(await zip.generateAsync({type:'blob'}),'questions.zip');
+    return 'zip';
+  }catch(_){
+    for(const f of files){
+      saveBlob(new Blob([JSON.stringify(f.data,null,1)],{type:'application/json'}),f.path.replace('/','_'));
+      await new Promise(r=>setTimeout(r,300));
+    }
+    return 'files';
+  }
+}
+// 결과: {state:'ok',data} / {state:'missing'}(없음) / {state:'bad'}(있는데 JSON 형식 오류)
+async function fetchJson(url){
+  let r;
+  try{r=await fetch(url,{cache:'no-cache'});}catch(_){return {state:'missing'};}
+  if(!r||!r.ok)return {state:'missing'};
+  let text='';
+  try{text=await r.text();}catch(_){return {state:'missing'};}
+  try{const data=JSON.parse(text);return Array.isArray(data)?{state:'ok',data}:{state:'bad'};}
+  catch(_){return /^\s*</.test(text)?{state:'missing'}:{state:'bad'};}   // 없는 주소에 HTML이 돌아오면 '없음'으로 본다
+}
+// 영역마다 questions/영문이름.json, 영문이름-2.json … 을 차례로 읽고, 예전 questions.json 도 있으면 같이 읽는다
+// 없는 파일은 조용히 건너뛰고, 형식이 틀린 파일은 BAD 에 모아서 화면에 알려준다
+async function loadAllQuestions(){
+  BAD=[];
+  const parts=await Promise.all(AREAS.map(async a=>{
+    const out=[];
+    for(let n=1;n<=60;n++){
+      const path='questions/'+a.file+(n>1?'-'+n:'')+'.json';
+      const r=await fetchJson(path);
+      if(r.state==='missing')break;
+      if(r.state==='bad'){BAD.push(path);continue;}
+      r.data.forEach(q=>{q.deck=q.deck||a.name;});
+      out.push(...r.data);
+    }
+    return out;
+  }));
+  const old=await fetchJson('questions.json');
+  if(old.state==='bad')BAD.push('questions.json');
+  const all=[].concat(...parts,old.state==='ok'?old.data:[]);
+  const seen=new Set();
+  return all.filter(q=>{if(seen.has(q.id))return false;seen.add(q.id);return true;});
 }
 
 /* ============ 시작 ============ */
 async function init(){
   applySyncLink();
   S=loadLocal();render();
-  try{
-    const r=await fetch('questions.json',{cache:'no-cache'});
-    if(!r.ok)throw new Error('questions.json 파일을 찾을 수 없어요 ('+r.status+')');
-    Q=await r.json();
-  }catch(err){
-    loadErr=location.protocol==='file:'
+  Q=await loadAllQuestions();
+  if(!Q.length){
+    loadNote=location.protocol==='file:'
       ?'파일을 그냥 더블클릭해서 열면 문제를 읽을 수 없어요. Netlify·GitHub Pages 같은 곳에 올리거나, 폴더에서 "python3 -m http.server"로 실행해 주세요.'
-      :err.message;
-    return render();
+      :'아직 올라온 문제 파일이 없어요. questions 폴더에 영역별 파일(예: questions/'+AREAS[0].file+'.json)을 올리면 나와요.';
   }
   Q.forEach(q=>{q.deck=q.deck||'어휘';QB[q.id]=q;});
   DECKS=[...new Set(Q.map(q=>q.deck))];
+  ALL=[...AREA_NAMES,...DECKS.filter(d=>!AREA_NAMES.includes(d))];
+  ready=true;
   await pull();
-  ensureToday();render();
+  ensureToday();routeFromHash();render();
 }
 document.addEventListener('visibilitychange',async()=>{
-  if(document.hidden||!S||!Q.length||view==='settings')return;
+  if(document.hidden||!S||!ready||!Q.length||view==='settings')return;
   const changed=await pull();
   const rebuilt=ensureToday();
   if(rebuilt||changed){
     const t=TD();
-    if(rebuilt||!t||cur>=t.ids.length)view='home';
+    if(rebuilt||!t||cur>=t.ids.length)routeFromHash();
     render();
   }
 });
