@@ -126,14 +126,22 @@ const LS_STATE='quizState.v1', LS_CFG='quizCfg.v1';
 let Q=[], QB={}, DECKS=[], S=null, loadErr='', ready=false, loadNote='', BAD=[];
 // ★ 영역 목록(표시 순서). 영역을 바꾸거나 추가하려면 여기만 고치세요. 엑셀의 '분류'(또는 파일 이름)와 같아야 해요.
 // 파일 이름(file)은 영문으로: 문제 파일은 questions/gamri.json, 길면 gamri-2.json, gamri-3.json … 으로 나눠 올려요.
+// match: 엑셀의 분류(또는 파일 이름)에 이런 글자가 들어 있으면 그 영역으로 자동 분류돼요.
+//   예) '2020년 제21회 감리 및 사업관리' → 감리,  '2020년 제21회 시스템 구조' → 시구
 const AREAS=[
-  {name:'감리',file:'gamri'},
-  {name:'소공',file:'sogong'},
-  {name:'데이터베이스',file:'database'},
-  {name:'시구',file:'sigu'},
-  {name:'보안',file:'security'}
+  {name:'감리',file:'gamri',match:['감리']},
+  {name:'소공',file:'sogong',match:['소프트웨어공학','소공']},
+  {name:'데이터베이스',file:'database',match:['데이터베이스']},
+  {name:'시구',file:'sigu',match:['시스템구조','시구']},
+  {name:'보안',file:'security',match:['보안']}
 ];
 const AREA_NAMES=AREAS.map(a=>a.name);
+function areaNameOf(deck){
+  if(AREA_NAMES.includes(deck))return deck;
+  const d=String(deck||'').replace(/\s+/g,'');
+  for(const a of AREAS){ if((a.match||[a.name]).some(k=>d.includes(k)))return a.name; }
+  return deck;
+}
 const CHUNK_DEFAULT=200;
 let ALL=AREA_NAMES.slice();
 let cfg=JSON.parse(localStorage.getItem(LS_CFG)||'{}');
@@ -532,6 +540,7 @@ function convertRows(rows,fileName){
     if(!question)return;
     useFix=(kind!=='generic');
     deck=deck||fileName.replace(/\.[^.]+$/,'')||'문제';
+    if(typeof areaNameOf==='function')deck=areaNameOf(deck);
     const choices=[];
     for(let n=1;n<=5;n++){
       const v=get('보기'+n,'선택지'+n,'선택'+n,'choice'+n,n+'번',String(n),'①②③④⑤'[n-1]);
@@ -661,8 +670,14 @@ async function loadAllQuestions(){
   const old=await fetchJson('questions.json');
   if(old.state==='bad')BAD.push('questions.json');
   const all=[].concat(...parts,old.state==='ok'?old.data:[]);
-  const seen=new Set();
-  return all.filter(q=>{if(seen.has(q.id))return false;seen.add(q.id);return true;});
+  all.forEach(q=>{q.deck=areaNameOf(q.deck);});
+  // 같은 ID이거나, 같은 영역에서 문제·보기가 똑같은 문제는 한 번만 쓴다 (영역별 파일이 먼저, 예전 questions.json 은 나중)
+  const seen=new Set(),seenText=new Set();
+  return all.filter(q=>{
+    const t=q.deck+'|'+q.question+'|'+(q.choices||[]).join('|');
+    if(seen.has(q.id)||seenText.has(t))return false;
+    seen.add(q.id);seenText.add(t);return true;
+  });
 }
 
 /* ============ 시작 ============ */
