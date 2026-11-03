@@ -131,7 +131,6 @@ a.icon-btn{display:grid;place-items:center;text-decoration:none}
 label{display:block;font-weight:600;font-size:15px;margin:14px 0 6px}
 input[type=text],input[type=number],input[type=password],input[type=url]{width:100%;font:inherit;padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#fff}
 .help{font-size:14px;color:var(--muted);margin:6px 0 0}
-.msg{font-size:15px;margin-top:10px;white-space:pre-wrap}
 .sync{font-size:13px;color:var(--muted)}
 .sync.err{color:var(--ng)}
 .err-box{background:var(--ng-bg);border-radius:14px;padding:16px;color:#7A1B20}
@@ -147,9 +146,9 @@ input[type=text],input[type=number],input[type=password],input[type=url]{width:1
 /* ============ 상태 ============ */
 const LS_STATE='quizState.v1', LS_CFG='quizCfg.v1';
 let Q=[], QB={}, DECKS=[], S=null, loadErr='', ready=false, loadNote='', BAD=[];
-// ★ 영역 목록(표시 순서). 영역을 바꾸거나 추가하려면 여기만 고치세요. 엑셀의 '분류'(또는 파일 이름)와 같아야 해요.
+// ★ 영역 목록(표시 순서). 영역을 바꾸거나 추가하려면 여기만 고치세요. 문제 파일의 deck 이름과 같아야 해요.
 // 파일 이름(file)은 영문으로: 문제 파일은 questions/gamri.json, 길면 gamri-2.json, gamri-3.json … 으로 나눠 올려요.
-// match: 엑셀의 분류(또는 파일 이름)에 이런 글자가 들어 있으면 그 영역으로 자동 분류돼요.
+// match: 문제의 deck 이름에 이런 글자가 들어 있으면 그 영역으로 자동 분류돼요.
 //   예) '2020년 제21회 감리 및 사업관리' → 감리,  '2020년 제21회 시스템 구조' → 시구
 const AREAS=[
   {name:'감리',file:'gamri',match:['감리']},
@@ -165,7 +164,6 @@ function areaNameOf(deck){
   for(const a of AREAS){ if((a.match||[a.name]).some(k=>d.includes(k)))return a.name; }
   return deck;
 }
-const CHUNK_DEFAULT=200;
 let ALL=AREA_NAMES.slice();
 let cfg=JSON.parse(localStorage.getItem(LS_CFG)||'{}');
 // Supabase 정보는 config.json 에 넣으면 모든 기기가 따로 입력하지 않아도 자동으로 연결돼요.
@@ -179,7 +177,7 @@ async function loadConfigFile(){
     if(url&&key&&code)cfg={url,key,code};
   }catch(_){}
 }
-let view='home', cur=0, curDeck='', syncStatus='', pushTimer=null, settingsMsg='';
+let view='home', cur=0, curDeck='', syncStatus='', pushTimer=null;
 const $app=document.getElementById('app');
 
 const e=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -193,4 +191,112 @@ function migrate(raw){
     s.queue.forEach(x=>{const st=s.stats[x.id]||(s.stats[x.id]={seen:0,wrong:0,last:'',lastWrong:''});
       if(!(st.wrong>0))st.wrong=1;if(!st.lastWrong)st.lastWrong=x.date||'';});
   }
-  delete s.queue;delete s.days;delete
+  delete s.queue;delete s.days;delete s.today;delete s.perDay;
+  s.v=3;return s;
+}
+function loadLocal(){try{return migrate(JSON.parse(localStorage.getItem(LS_STATE)||'{}'));}catch(_){return defaultState();}}
+function save(){S.updatedAt=Date.now();localStorage.setItem(LS_STATE,JSON.stringify(S));schedulePush();}
+function shuffle(a){a=a.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+// 아직 한 문제도 풀지 않은 '빈' 상태인지
+function isPristine(s){
+  if(Object.keys(s.stats||{}).length||Object.keys(s.res||{}).length||Object.keys(s.review||{}).length||Object.keys(s.rev||{}).length||Object.keys(s.rsess||{}).length)return false;
+  return true;
+}
+
+
+/* ============ 풀이 세션: 영역의 전체 문제 / 틀린 문제 복습 (하루 문제 수 제한 없음) ============ */
+let mode='all';   // 'all' = 영역 전체 문제, 'review' = 영역의 틀린 문제 복습, 'rround' = 복습 페이지의 N차 복습
+let curRound=0;
+
+/* ============ 복습 (에빙하우스 망각곡선): 틀린 날로부터 1일 / 3일 / 5일 / 7일 / 30일 뒤에 다시 풀기 ============ */
+// ★ 복습 간격은 여기만 고치면 돼요. days = 틀린 날로부터 며칠 뒤
+const REVIEW_NAME='복습';
+const REVIEW_STEPS=[
+  {n:1,days:1,label:'전날'},
+  {n:2,days:3,label:'3일 뒤'},
+  {n:3,days:5,label:'5일 뒤'},
+  {n:4,days:7,label:'7일 뒤'},
+  {n:5,days:30,label:'한 달 뒤'}
+];
+const dayNum=s=>{const [y,m,d]=String(s).split('-').map(Number);return Math.round(Date.UTC(y,m-1,d)/86400000);};
+const daysBetween=(a,b)=>dayNum(b)-dayNum(a);
+function addDays(s,n){const [y,m,d]=String(s).split('-').map(Number);const t=new Date(Date.UTC(y,m-1,d+n));
+  return t.getUTCFullYear()+'-'+String(t.getUTCMonth()+1).padStart(2,'0')+'-'+String(t.getUTCDate()).padStart(2,'0');}
+const fmtDate=s=>{const [y,m,d]=String(s).split('-').map(Number);return m+'월 '+d+'일';};
+// 한 문제의 복습 상태: {round:다음에 할 차수, due:그 차수를 할 수 있는 날} / 5차까지 끝났으면 {round:0,grad:true} / 틀린 적 없으면 null
+// 틀린 날(lastWrong)이 기준이에요. 다시 풀어서 맞혀도 틀린 날은 그대로고, 복습 중에 또 틀리면 그날부터 새로 시작해요.
+function reviewInfo(id){
+  const st=S.stats[id];
+  if(!st||!(st.wrong>0)||!st.lastWrong)return null;
+  const base=st.lastWrong,rv=(S.rev[id]&&S.rev[id].base===base)?S.rev[id]:null,done=rv?rv.done:{};
+  let n=1;while(n<=REVIEW_STEPS.length&&done[n])n++;
+  if(n>REVIEW_STEPS.length)return {round:0,grad:true};
+  let due=addDays(base,REVIEW_STEPS[n-1].days);
+  if(rv&&rv.last){const nx=addDays(rv.last,1);if(nx>due)due=nx;}   // 오늘 한 복습은 내일부터 다음 차수
+  return {round:n,due};
+}
+const areaOrder=q=>{const i=AREA_NAMES.indexOf(q.deck);return i<0?99:i;};
+// n차 복습으로 오늘 풀 문제 (모든 영역 함께, 영역 순서대로)
+function reviewDue(n){
+  const T=todayStr();
+  return Q.map((q,i)=>({q,i,info:reviewInfo(q.id)})).filter(x=>x.info&&x.info.round===n&&x.info.due<=T)
+    .sort((a,b)=>areaOrder(a.q)-areaOrder(b.q)||a.i-b.i).map(x=>x.q.id);
+}
+// n차 복습 차례가 아직 안 온 문제 {count, next(가장 빠른 날)}
+function reviewUpcoming(n){
+  const T=todayStr();let count=0,next='';
+  Q.forEach(q=>{const info=reviewInfo(q.id);if(info&&info.round===n&&info.due>T){count++;if(!next||info.due<next)next=info.due;}});
+  return {count,next};
+}
+const reviewGraduated=()=>Q.filter(q=>{const i=reviewInfo(q.id);return i&&i.grad;}).length;
+function markReviewDone(id,round){
+  const st=S.stats[id],base=st&&st.lastWrong;if(!base)return;
+  let rv=S.rev[id];if(!rv||rv.base!==base)rv=S.rev[id]={base,done:{},last:''};
+  rv.done[round]=todayStr();rv.last=todayStr();
+}
+const sessLabel=()=>mode==='rround'?'복습 '+curRound+'차':e(curDeck)+(mode==='review'?' 복습':'');
+const deckIds=dk=>Q.filter(q=>q.deck===dk).map(q=>q.id);
+const wrongOf=id=>((S.stats[id]||{}).wrong||0);
+// 틀린 적 있는 문제: 자주 틀린 순, 같으면 오래전에 틀린 순
+function flaggedIds(dk){
+  return deckIds(dk).filter(id=>wrongOf(id)>0).sort((a,b)=>{
+    const d=wrongOf(b)-wrongOf(a);if(d)return d;
+    const la=(S.stats[a]||{}).lastWrong||'',lb=(S.stats[b]||{}).lastWrong||'';
+    return la<lb?-1:la>lb?1:0;
+  });
+}
+// 지금 풀고 있는 묶음 {ids, res}
+function sess(){
+  if(mode==='rround'){
+    const r=S.rsess[curRound]||{ids:[],res:{}};
+    return {ids:(r.ids||[]).filter(id=>QB[id]),res:r.res||(r.res={})};
+  }
+  if(mode==='review'){
+    const r=S.review[curDeck]||(S.review[curDeck]={ids:[],res:{}});
+    return {ids:r.ids.filter(id=>QB[id]),res:r.res};
+  }
+  return {ids:deckIds(curDeck),res:S.res};
+}
+const answeredIn=(ids,res)=>ids.filter(id=>res[id]&&res[id].tries>0).length;
+// 가장 최근에 푼 답이 맞았으면 '맞음' (틀렸다가 다시 풀어 맞혀도 맞은 것으로 센다)
+function isOk(res,id){const r=res[id];if(!r||!(r.tries>0))return false;
+  if(r.ok!==undefined)return r.ok;
+  return r.picked!=null?r.picked===QB[id].answer:!r.everWrong;}
+
+/* ============ 동기화 (Supabase, 선택) ============ */
+const syncOn=()=>cfg.url&&cfg.key&&cfg.code;
+const base=()=>cfg.url.replace(/\/+$/,'')+'/rest/v1/progress';
+const hdr=()=>{const h={apikey:cfg.key,'Content-Type':'application/json'};
+  // 예전 anon key(eyJ…)는 Authorization에도 보내고, 새 publishable key(sb_…)는 apikey로만 보낸다
+  if(!cfg.key.startsWith('sb_'))h.Authorization='Bearer '+cfg.key;return h;};
+function setSync(s){syncStatus=s;const el=document.getElementById('sync');if(el){el.textContent=syncText();el.className='sync'+(s==='err'?' err':'');}}
+function syncText(){return !syncOn()?'이 기기에만 저장 중':syncStatus==='err'?'동기화 실패 (인터넷 확인)':syncStatus==='ok'?'동기화됨':'동기화 중…';}
+async function pull(){
+  if(!syncOn())return false;
+  try{
+    const r=await fetch(base()+'?id=eq.'+encodeURIComponent(cfg.code)+'&select=data',{headers:hdr()});
+    if(!r.ok)throw new Error(r.status);
+    const rows=await r.json(); setSync('ok');
+    if(!rows[0]){push();return false;}
+    const d=rows[0].data;
+    if(!d)return
