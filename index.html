@@ -99,6 +99,16 @@ a.icon-btn{display:grid;place-items:center;text-decoration:none}
 .verdict h3{margin:0 0 6px;font-size:18px}
 .verdict.ok h3{color:var(--ok)} .verdict.ng h3{color:var(--ng)}
 .verdict p{margin:0;white-space:pre-wrap;word-break:keep-all}
+.verdict p+p,.verdict p+.tbl-wrap,.verdict .tbl-wrap+p{margin-top:10px}
+.verdict .tbl-title{font-weight:700;margin:12px 0 0}
+.expl-imgs{margin:0 0 4px}
+.expl-imgs:empty{display:none}
+.expl-imgs a{display:block}
+.expl-img{display:block;max-width:100%;height:auto;margin:8px 0 12px;border-radius:10px;border:1px solid var(--line);background:#fff}
+.tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0 0}
+.tbl{border-collapse:collapse;width:100%;font-size:15px;background:#fff}
+.tbl th,.tbl td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top;white-space:pre-wrap;word-break:keep-all}
+.tbl th{background:#EEF2F9;font-weight:700}
 
 .footer{position:fixed;left:0;right:0;bottom:0;background:linear-gradient(to top,var(--bg) 70%,transparent);
   padding:20px 16px calc(14px + env(safe-area-inset-bottom))}
@@ -251,6 +261,130 @@ async function push(){
 }
 function schedulePush(){if(!syncOn())return;clearTimeout(pushTimer);pushTimer=setTimeout(push,700);}
 
+/* ============ 풀이 그림: questions/explanation/img/영문영역이름-번호.jpg (없으면 안 보임) ============ */
+const EXPL_IMG_DIR='questions/explanation/img/';   // 그림을 올려둘 폴더
+const EXPL_IMG_EXTS=['jpg','jpeg','png','webp'];    // 찾아볼 확장자 (소문자로 저장하세요)
+const EXPL_IMG_POS='top';                           // 'top' = 풀이 글 위, 'bottom' = 풀이 글 아래
+const IMG_CACHE={};
+// 문제 → 그림 파일 이름(확장자 제외). 예) 보안 영역 '…보안-117' → questions/explanation/img/security-117
+function explImgBase(q){
+  const area=AREAS.find(a=>a.name===q.deck);
+  const m=String(q.id).match(/(\d+)\s*$/);
+  return (area&&m)?EXPL_IMG_DIR+area.file+'-'+parseInt(m[1],10):null;
+}
+function probeImage(url){return new Promise(res=>{const im=new Image();im.onload=()=>res(true);im.onerror=()=>res(false);im.src=url;});}
+// base.jpg 를 찾고, 있으면 base-2.jpg, base-3.jpg … (최대 6장)도 찾는다. 하나도 없으면 빈 목록
+async function findExplImages(base){
+  if(IMG_CACHE[base])return IMG_CACHE[base];
+  const found=[];
+  for(let n=1;n<=6;n++){
+    const stem=n===1?base:base+'-'+n;
+    let hit=null;
+    for(const ext of EXPL_IMG_EXTS){const u=stem+'.'+ext;if(await probeImage(u)){hit=u;break;}}
+    if(!hit)break;
+    found.push(hit);
+  }
+  return IMG_CACHE[base]=found;
+}
+function fillExplImages(){
+  const h=$app.querySelector('.expl-imgs');if(!h)return;
+  const base=h.dataset.base;
+  const show=urls=>{
+    if(!h.isConnected)return;   // 그 사이 다른 화면으로 바뀌었으면 그리지 않는다
+    h.innerHTML=urls.map((u,i)=>`<a href="${e(u)}" target="_blank" rel="noopener"><img class="expl-img" src="${e(u)}" alt="풀이 그림 ${i+1}" loading="lazy"></a>`).join('');
+  };
+  if(IMG_CACHE[base]){show(IMG_CACHE[base]);return;}
+  findExplImages(base).then(show);
+}
+
+/* ============ 풀이(설명) 표시: 글 + 표 ============ */
+// 풀이는 ① 그냥 글  ② 표 데이터(JSON)  ③ 글 안의 마크다운 표(| 머리 | 머리 |) 모두 가능
+function parseMaybeJson(x){
+  if(typeof x==='string'){const t=x.trim();if(/^[\[{]/.test(t)){try{return JSON.parse(t);}catch(_){}}}
+  return x;
+}
+function cellText(v){
+  if(v==null)return '';
+  if(Array.isArray(v))return v.map(cellText).join('\n');
+  if(typeof v==='object')return JSON.stringify(v);
+  return String(v);
+}
+function tableFromRows(rows,header){
+  rows=rows.map(r=>Array.isArray(r)?r.map(cellText):[cellText(r)]);
+  if(!header){header=rows[0]||[];rows=rows.slice(1);}
+  return {type:'table',header:header.map(cellText),rows};
+}
+function tableFromObjects(list){
+  const keys=[];list.forEach(o=>Object.keys(o).forEach(k=>{if(!keys.includes(k))keys.push(k);}));
+  return {type:'table',header:keys,rows:list.map(o=>keys.map(k=>cellText(o[k])))};
+}
+function textBlocks(str){
+  const lines=String(str).split('\n'),out=[];let buf=[];
+  const isRow=l=>/^\s*\|.*\|\s*$/.test(l);
+  const isSep=l=>/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+  const split=l=>l.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(c=>c.trim());
+  const flush=()=>{const t=buf.join('\n').trim();if(t)out.push({type:'text',text:t});buf=[];};
+  for(let i=0;i<lines.length;i++){
+    if(isRow(lines[i])&&i+1<lines.length&&isSep(lines[i+1])){
+      flush();
+      const header=split(lines[i]),rows=[];i+=2;
+      while(i<lines.length&&isRow(lines[i])){rows.push(split(lines[i]));i++;}
+      i--;out.push({type:'table',header,rows});
+    }else buf.push(lines[i]);
+  }
+  flush();
+  return out;
+}
+const T_TEXT=['text','설명','풀이','해설','explanation','description','desc'];
+const T_TABLE=['table','tables','표'];
+const T_HEAD=['headers','header','columns','머리글','열'];
+const T_ROWS=['rows','data','행','데이터'];
+const T_NOTE=['note','notes','참고','주석'];
+const T_TITLE=['title','제목'];
+const pickKey=(o,keys)=>keys.find(k=>o[k]!==undefined);
+function explBlocks(x){
+  x=parseMaybeJson(x);
+  if(x==null||x==='')return [];
+  if(typeof x==='string')return textBlocks(x);
+  if(typeof x!=='object')return [{type:'text',text:String(x)}];
+  if(Array.isArray(x)){
+    if(!x.length)return [];
+    if(x.every(r=>Array.isArray(r)))return [tableFromRows(x)];
+    if(x.every(r=>r&&typeof r==='object'&&!Array.isArray(r)&&!pickKey(r,[...T_TEXT,...T_TABLE,...T_ROWS])))return [tableFromObjects(x)];
+    return x.flatMap(explBlocks);
+  }
+  const tk=pickKey(x,T_TEXT),tb=pickKey(x,T_TABLE),hk=pickKey(x,T_HEAD),rk=pickKey(x,T_ROWS),nk=pickKey(x,T_NOTE),ttl=pickKey(x,T_TITLE);
+  if(tk||tb||rk||nk||ttl){
+    const out=[];
+    if(tk)out.push(...explBlocks(x[tk]));
+    if(tb){const v=parseMaybeJson(x[tb]);(Array.isArray(v)&&v.length&&v.every(t=>t&&typeof t==='object'&&!Array.isArray(t)&&pickKey(t,[...T_TABLE,...T_ROWS]))?v:[v])
+      .forEach(t=>{const bs=explBlocks(t);if(ttl&&bs[0]&&bs[0].type==='table'&&!bs[0].title)bs[0].title=String(x[ttl]);out.push(...bs);});}
+    if(rk){const t=tableFromRows(Array.isArray(x[rk])?x[rk]:[],hk&&Array.isArray(x[hk])?x[hk]:undefined);if(ttl)t.title=String(x[ttl]);out.push(t);}
+    if(!tb&&!rk&&ttl)out.unshift({type:'text',text:String(x[ttl]),strong:true});
+    if(nk)out.push(...explBlocks(x[nk]));
+    return out;
+  }
+  // 항목: 내용 형태의 단순 객체 → 2열 표, 값이 표/배열이면 항목 이름을 제목으로
+  const out=[];let pairs=[];
+  const flush=()=>{if(pairs.length){out.push({type:'table',header:['항목','내용'],rows:pairs});pairs=[];}};
+  for(const [k,v] of Object.entries(x)){
+    if(v!==null&&typeof v==='object'){flush();out.push({type:'text',text:k,strong:true});out.push(...explBlocks(v));}
+    else pairs.push([k,cellText(v)]);
+  }
+  flush();
+  return out;
+}
+function explanationHtml(x){
+  const blocks=explBlocks(x);
+  return blocks.map(b=>{
+    if(b.type==='text')return b.strong?`<p class="tbl-title">${e(b.text)}</p>`:`<p>${e(b.text)}</p>`;
+    const w=Math.max(b.header.length,...b.rows.map(r=>r.length),1);
+    const pad=r=>{r=r.slice();while(r.length<w)r.push('');return r;};
+    const head=b.header.some(h=>h!=='')?`<thead><tr>${pad(b.header).map(h=>`<th>${e(h)}</th>`).join('')}</tr></thead>`:'';
+    return `${b.title?`<p class="tbl-title">${e(b.title)}</p>`:''}<div class="tbl-wrap"><table class="tbl">${head}<tbody>${b.rows.map(r=>`<tr>${pad(r).map(c=>`<td>${e(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  }).join('');
+}
+
 /* ============ 화면 ============ */
 // fn: 눌렀을 때 부를 함수 이름('go','openAt'), 없으면 표시만
 function dotsHtml(ids,res,fn,scroll){
@@ -358,9 +492,11 @@ function renderQuiz(){
     if(answered){if(i===q.answer)cls='right';else if(i===r.picked)cls='wrong';}
     return `<button class="choice ${cls}" ${answered?'disabled':''} onclick="pick(${i})"><span class="n">${i+1}</span><span class="t">${e(c)}</span></button>`;
   }).join('');
+  const imgBase=answered?explImgBase(q):null;
+  const imgSlot=imgBase?`<div class="expl-imgs" data-base="${e(imgBase)}"></div>`:'';
   const verdict=answered?`<div class="verdict ${ok?'ok':'ng'}">
       <h3>${ok?'정답이에요!':'아쉬워요. 정답은 '+(q.answer+1)+'번'}</h3>
-      <p>${e(q.explanation||'')}</p></div>`:'';
+      ${EXPL_IMG_POS==='top'?imgSlot:''}${explanationHtml(q.explanation)}${EXPL_IMG_POS==='top'?'':imgSlot}</div>`:'';
   const last=cur===ss.ids.length-1;
   const footer=answered?`<div class="footer"><div class="row">
       <button class="btn ghost" onclick="retry()">다시 풀기</button>
@@ -376,6 +512,7 @@ function renderQuiz(){
     ${q.image?`<img class="qimg" src="${e(q.image)}" alt="">`:''}
     <div class="choices">${ch}</div>
     ${verdict}${footer}`;
+  fillExplImages();
   window.scrollTo(0,0);
   const box=$app.querySelector('.dots.scroll'),c=$app.querySelector('.dot.cur');
   if(box&&c)box.scrollTop=Math.max(0,c.offsetTop-box.offsetTop-box.clientHeight/2);
@@ -562,6 +699,7 @@ function convertRows(rows,fileName){
       expl=hanja+' → '+(at||choices[idx])+(why?'\n\n'+why:'');
     }else{
       expl=clean(get('풀이','해설','설명','explanation'));
+      if(/^[\[{]/.test(expl)){try{expl=JSON.parse(expl);}catch(_){}}   // 풀이 칸에 표 JSON 을 넣었으면 구조 그대로 저장
     }
     let id=get('번호','id','no');
     id=id!==''&&!isNaN(id)?Number(id):(id||rowNo-1);
